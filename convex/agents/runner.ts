@@ -139,24 +139,13 @@ export const runResearch = internalAction({
       id: workflowRecordId,
     });
 
+    const config = await ctx.runQuery(internal.agents.config.getConfig, { key: "research" });
+    const modelProvider: GatewayProvider = "openrouter";
+    const modelId: string = config.model;
+    const catalogTrackingId = modelId;
     const override: string | undefined = workflow?.modelOverrides?.research;
-    let modelProvider: GatewayProvider;
-    let modelId: string;
-    let catalogTrackingId: string | undefined;
-    if (override) {
-      modelProvider = "openrouter";
-      modelId = override;
-      catalogTrackingId = override;
-    } else {
-      const config: { provider: string; model: string } = await ctx.runQuery(internal.agents.config.getConfig, {
-        key: "research",
-      });
-      modelProvider = config.provider as GatewayProvider;
-      modelId = config.model;
-      catalogTrackingId = modelProvider === "openrouter" ? modelId : undefined;
-    }
-
-    const model = createModelFromConfig(modelProvider, modelId);
+    if (override && override !== modelId) throw new Error("Model override differs from authoritative settings");
+    const model = await createModelFromConfig(ctx, "research", String(workflowRecordId), config.provider, modelId);
 
     const useBuiltInSearch: boolean = modelId.includes("sonar");
     const baseResearch = await loadInstruction(ctx, "research");
@@ -210,7 +199,7 @@ Please search for authoritative sources, analyze the information, and provide yo
       result = await researchAgent.generateText(
         ctx,
         { threadId },
-        { prompt, maxOutputTokens: 16384, stopWhen: stepCountIs(10) }
+        { prompt, maxOutputTokens: 4096, maxRetries: 0, stopWhen: stepCountIs(4) }
       );
       await logTokenUsage(ctx, workflowRecordId, "research", modelProvider, modelId, result);
     } catch (error) {
@@ -278,24 +267,13 @@ export const runOutline = internalAction({
       throw new Error("Research output not found");
     }
 
+    const config = await ctx.runQuery(internal.agents.config.getConfig, { key: "outline" });
+    const modelProvider: GatewayProvider = "openrouter";
+    const modelId: string = config.model;
+    const catalogTrackingId = modelId;
     const override: string | undefined = workflow?.modelOverrides?.outline;
-    let modelProvider: GatewayProvider;
-    let modelId: string;
-    let catalogTrackingId: string | undefined;
-    if (override) {
-      modelProvider = "openrouter";
-      modelId = override;
-      catalogTrackingId = override;
-    } else {
-      const config: { provider: string; model: string } = await ctx.runQuery(internal.agents.config.getConfig, {
-        key: "outline",
-      });
-      modelProvider = config.provider as GatewayProvider;
-      modelId = config.model;
-      catalogTrackingId = modelProvider === "openrouter" ? modelId : undefined;
-    }
-
-    const model = createModelFromConfig(modelProvider, modelId);
+    if (override && override !== modelId) throw new Error("Model override differs from authoritative settings");
+    const model = await createModelFromConfig(ctx, "outline", String(workflowRecordId), config.provider, modelId);
 
     const baseOutline = await loadInstruction(ctx, "outline");
     const instructions = await withEditorialContext(ctx, baseOutline);
@@ -344,7 +322,7 @@ Please create a comprehensive article outline and respond with a JSON object in 
       result = await outlineAgent.generateText(
         ctx,
         { threadId },
-        { prompt, maxOutputTokens: 16384 }
+        { prompt, maxOutputTokens: 4096, maxRetries: 0 }
       );
       await logTokenUsage(ctx, workflowRecordId, "outline", modelProvider, modelId, result);
     } catch (error) {
@@ -398,24 +376,13 @@ export const runDraft = internalAction({
       throw new Error("Research or outline output not found");
     }
 
+    const config = await ctx.runQuery(internal.agents.config.getConfig, { key: "draft" });
+    const modelProvider: GatewayProvider = "openrouter";
+    const modelId: string = config.model;
+    const catalogTrackingId = modelId;
     const override: string | undefined = workflow?.modelOverrides?.draft;
-    let modelProvider: GatewayProvider;
-    let modelId: string;
-    let catalogTrackingId: string | undefined;
-    if (override) {
-      modelProvider = "openrouter";
-      modelId = override;
-      catalogTrackingId = override;
-    } else {
-      const config: { provider: string; model: string } = await ctx.runQuery(internal.agents.config.getConfig, {
-        key: "draft",
-      });
-      modelProvider = config.provider as GatewayProvider;
-      modelId = config.model;
-      catalogTrackingId = modelProvider === "openrouter" ? modelId : undefined;
-    }
-
-    const model = createModelFromConfig(modelProvider, modelId);
+    if (override && override !== modelId) throw new Error("Model override differs from authoritative settings");
+    const model = await createModelFromConfig(ctx, "draft", String(workflowRecordId), config.provider, modelId);
 
     // Inject format-adapter instructions if a non-default format is set.
     // Both base draft body and format adapter are loaded from the resolver

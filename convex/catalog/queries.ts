@@ -3,9 +3,10 @@
  */
 
 import { v } from "convex/values";
+import { adminMutation } from "../lib/adminAuth";
+import { CHEAP_MODELS } from "../lib/aiPolicy";
 import {
   query,
-  mutation,
   internalQuery,
 } from "../_generated/server";
 
@@ -54,7 +55,7 @@ export const _getByIdInternal = internalQuery({
   },
 });
 
-export const setEnabled = mutation({
+export const setEnabled = adminMutation({
   args: { id: v.string(), isEnabled: v.boolean() },
   handler: async (ctx, { id, isEnabled }) => {
     const row = await ctx.db
@@ -62,11 +63,12 @@ export const setEnabled = mutation({
       .withIndex("by_model_id", (q) => q.eq("id", id))
       .unique();
     if (!row) throw new Error(`Model ${id} not found`);
+    if (isEnabled && !CHEAP_MODELS.some((model) => model === id)) throw new Error("Model blocked by cost policy");
     await ctx.db.patch(row._id, { isEnabled });
   },
 });
 
-export const setRecommendedFor = mutation({
+export const setRecommendedFor = adminMutation({
   args: {
     id: v.string(),
     recommendedFor: v.array(stepLiteral),
@@ -79,7 +81,7 @@ export const setRecommendedFor = mutation({
     if (!row) throw new Error(`Model ${id} not found`);
     // Guard: caller can only set steps the model is actually eligible for.
     const filtered = recommendedFor.filter((s) =>
-      row.eligibleSteps.includes(s),
+      CHEAP_MODELS.some((model) => model === row.id) && ["research", "outline", "draft"].includes(s),
     );
     await ctx.db.patch(row._id, { recommendedFor: filtered });
   },
@@ -92,7 +94,7 @@ export const listAssumptions = query({
   },
 });
 
-export const upsertAssumption = mutation({
+export const upsertAssumption = adminMutation({
   args: {
     step: stepLiteral,
     inputTokens: v.number(),
@@ -148,13 +150,14 @@ export const getDefaults = query({
   },
 });
 
-export const setDefaultForStep = mutation({
+export const setDefaultForStep = adminMutation({
   args: { step: stepLiteral, modelId: v.string() },
   handler: async (ctx, { step, modelId }) => {
     const catalog = await ctx.db
       .query("modelCatalog")
       .withIndex("by_model_id", (q) => q.eq("id", modelId))
       .unique();
+    if (!CHEAP_MODELS.some((model) => model === modelId)) throw new Error("Model blocked by cost policy");
     if (!catalog) throw new Error(`Model ${modelId} not in catalog`);
     if (!catalog.isEnabled) {
       throw new Error(`Model ${modelId} is not enabled`);
@@ -164,14 +167,14 @@ export const setDefaultForStep = mutation({
     }
     const existing = await ctx.db
       .query("agentConfigs")
-      .withIndex("by_key", (q) => q.eq("key", step))
-      .first();
+      .withIndex("by_workspace_key", (q) => q.eq("workspaceId", undefined).eq("key", step))
+      .unique();
     const now = Date.now();
     if (existing) {
       await ctx.db.patch(existing._id, {
         provider: "openrouter",
         model: modelId,
-        isActive: true,
+        isActive: existing.isActive,
         updatedAt: now,
       });
     } else {
@@ -179,7 +182,7 @@ export const setDefaultForStep = mutation({
         key: step,
         provider: "openrouter",
         model: modelId,
-        isActive: true,
+        isActive: false,
         updatedAt: now,
       });
     }

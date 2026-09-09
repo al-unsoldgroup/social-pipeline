@@ -92,8 +92,10 @@ export const translatePost = internalAction({
   args: {
     postId: v.id("blogPosts"),
     locales: v.array(v.string()),
+    runId: v.optional(v.string()),
   },
-  handler: async (ctx, { postId, locales }) => {
+  handler: async (ctx, { postId, locales, runId }) => {
+    if (locales.length > 10) throw new Error("Translation batch exceeds 10 locales");
     // Fetch the blog post
     const post = await ctx.runQuery(internal.blogPosts.getById, { id: postId });
     if (!post) throw new Error(`Blog post not found: ${postId}`);
@@ -102,7 +104,7 @@ export const translatePost = internalAction({
     const config = await ctx.runQuery(internal.agents.config.getConfig, {
       key: "translate",
     });
-    const model = createModelFromConfig(config.provider, config.model);
+    const model = await createModelFromConfig(ctx, "translate", runId ?? crypto.randomUUID(), config.provider, config.model);
 
     const results: Array<{ locale: string; status: string }> = [];
 
@@ -122,7 +124,7 @@ export const translatePost = internalAction({
         );
 
         const { object: translated } = await generateObject({
-          model,
+          model, maxRetries: 0, maxOutputTokens: 4096,
           schema: translationSchema,
           prompt,
         });
@@ -176,10 +178,12 @@ export const translateAllPosts = internalAction({
       results: Array<{ locale: string; status: string }>;
     }> = [];
 
+    if (posts.length * locales.length > 10) throw new Error("Select individual posts: translation batch exceeds 10 calls");
+    const runId = crypto.randomUUID();
     for (const post of posts) {
       const result = await ctx.runAction(
         internal.agents.translate.translatePost,
-        { postId: post._id, locales }
+        { postId: post._id, locales, runId }
       );
       results.push(result);
     }
@@ -267,9 +271,11 @@ export const translateEntity = internalAction({
   args: {
     contentType: v.string(),
     contentId: v.string(),
+    runId: v.optional(v.string()),
     locales: v.array(v.string()),
   },
-  handler: async (ctx, { contentType, contentId, locales }) => {
+  handler: async (ctx, { contentType, contentId, locales, runId }) => {
+    if (locales.length > 10) throw new Error("Translation batch exceeds 10 locales");
     const entityConfig = ENTITY_CONFIGS[contentType];
     if (!entityConfig) {
       throw new Error(`Unknown content type: ${contentType}. Available: ${Object.keys(ENTITY_CONFIGS).join(", ")}`);
@@ -313,7 +319,7 @@ export const translateEntity = internalAction({
     const config = await ctx.runQuery(internal.agents.config.getConfig, {
       key: "translate",
     });
-    const model = createModelFromConfig(config.provider, config.model);
+    const model = await createModelFromConfig(ctx, "translate", runId ?? crypto.randomUUID(), config.provider, config.model);
 
     const entityLabel = entity.name || entity.title || entity.question || contentId;
     const results: Array<{ locale: string; status: string }> = [];
@@ -330,7 +336,7 @@ export const translateEntity = internalAction({
 
         // Use generateText + JSON parse instead of generateObject
         // (works better with AI Gateway which doesn't support responseFormat)
-        const { text } = await generateText({ model, prompt });
+        const { text } = await generateText({ model, prompt, maxRetries: 0, maxOutputTokens: 4096 });
 
         // Extract JSON from response (handle markdown code fences)
         const jsonStr = text.replace(/```(?:json)?\n?/g, "").trim();
@@ -379,6 +385,7 @@ export const translateAllEntities = internalAction({
     locales: v.array(v.string()),
   },
   handler: async (ctx, { contentType, locales }) => {
+    if (locales.length > 10) throw new Error("Translation batch exceeds 10 locales");
     const entityConfig = ENTITY_CONFIGS[contentType];
     if (!entityConfig) {
       throw new Error(`Unknown content type: ${contentType}`);
@@ -394,10 +401,12 @@ export const translateAllEntities = internalAction({
 
     const results: Array<any> = [];
 
+    if (items.length * locales.length > 10) throw new Error("Select individual entities: translation batch exceeds 10 calls");
+    const runId = crypto.randomUUID();
     for (const item of items) {
       const result = await ctx.runAction(
         internal.agents.translate.translateEntity,
-        { contentType, contentId: item._id, locales },
+        { contentType, contentId: item._id, locales, runId },
       );
       results.push(result);
     }

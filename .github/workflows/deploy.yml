@@ -50,24 +50,7 @@ jobs:
           CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CF_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
-      # ── Provision: AI Gateway ──────────────────────────────────────────────
-      - name: Provision AI Gateway
-        run: |
-          EXISTING=$(curl -s "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID/ai-gateway/gateways?per_page=100" \
-            -H "Authorization: Bearer $CF_API_TOKEN" | \
-            jq -r '.result[] | select(.slug=="social-pipeline") | .slug // empty')
-          if [ -z "$EXISTING" ]; then
-            curl -s -X POST "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID/ai-gateway/gateways" \
-              -H "Authorization: Bearer $CF_API_TOKEN" \
-              -H "Content-Type: application/json" \
-              -d '{"name":"social-pipeline","slug":"social-pipeline"}' | jq '.success'
-            echo "Created AI Gateway: social-pipeline"
-          else
-            echo "AI Gateway already exists: social-pipeline"
-          fi
-        env:
-          CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CF_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      # AI Gateway is shared and pre-provisioned; deployment never creates or enables it.
 
       # ── Provision: R2 bucket ───────────────────────────────────────────────
       - name: Provision R2 bucket
@@ -116,7 +99,6 @@ jobs:
             [ -n "$val" ] && npx convex env set "$key" "$val" || true
           }
           set_if_present CF_ACCOUNT_ID        "$CF_ACCOUNT_ID"
-          set_if_present CF_AI_GATEWAY_NAME   "social-pipeline"
           set_if_present AUTH_GITHUB_ID       "$AUTH_GITHUB_ID"
           set_if_present AUTH_GITHUB_SECRET   "$AUTH_GITHUB_SECRET"
           set_if_present JWT_PRIVATE_KEY      "$JWT_PRIVATE_KEY"

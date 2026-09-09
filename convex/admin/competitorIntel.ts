@@ -6,6 +6,8 @@
  */
 
 import { v } from "convex/values";
+import { requireAdmin } from "../lib/adminAuth";
+import { requireAdminAction } from "../lib/requireAdminAction";
 import { action, mutation, query, internalAction, internalMutation, internalQuery } from "../_generated/server";
 import { internal } from "../_generated/api";
 import { tagCompetitorContent } from "../agents/competitorTagging";
@@ -26,6 +28,7 @@ export const createScrapeJob = mutation({
     baseUrl: v.string(),
   },
   handler: async (ctx, { competitorName, baseUrl }) => {
+    await requireAdmin(ctx);
     const now = Date.now();
     return await ctx.db.insert("competitorScrapeJobs", {
       competitorName,
@@ -50,6 +53,7 @@ export const addContent = mutation({
     r2Key: v.optional(v.string()),
   },
   handler: async (ctx, { competitorName, sourceUrl, title, r2Key }) => {
+    await requireAdmin(ctx);
     // Check if URL already exists
     const existing = await ctx.db
       .query("competitorContent")
@@ -85,6 +89,7 @@ export const batchAddUrls = mutation({
     ),
   },
   handler: async (ctx, { competitorName, urls }) => {
+    await requireAdmin(ctx);
     const now = Date.now();
     let added = 0;
     let skipped = 0;
@@ -121,6 +126,7 @@ export const batchAddUrls = mutation({
 export const approveBrief = mutation({
   args: { briefId: v.id("contentBriefs") },
   handler: async (ctx, { briefId }) => {
+    await requireAdmin(ctx);
     const brief = await ctx.db.get(briefId);
     if (!brief) throw new Error("Brief not found");
     if (brief.status !== "generated") {
@@ -160,6 +166,7 @@ export const rejectBrief = mutation({
     reason: v.optional(v.string()),
   },
   handler: async (ctx, { briefId }) => {
+    await requireAdmin(ctx);
     const brief = await ctx.db.get(briefId);
     if (!brief) throw new Error("Brief not found");
 
@@ -333,6 +340,7 @@ export const getTaggedByCompetitor = query({
 export const getClusterMatrix = action({
   args: {},
   handler: async (ctx) => {
+    await requireAdminAction(ctx);
     const competitors = ["Squaremouth", "InsureMyTrip", "TravelInsurance.com", "AARDY", "World Nomads"];
     const matrix: Record<
       string,
@@ -411,6 +419,7 @@ export const getTopicDepth = query({
 export const getGapAnalysis = action({
   args: {},
   handler: async (ctx) => {
+    await requireAdminAction(ctx);
     // Query per-competitor to stay under 16MB (each runQuery has own budget)
     const competitors = ["Squaremouth", "InsureMyTrip", "TravelInsurance.com", "AARDY", "World Nomads"];
     const tagged: Array<{ competitorName: string; topicTag?: string; searchKeywords?: string[]; qualityScore?: number }> = [];
@@ -602,6 +611,7 @@ export const kickoff = mutation({
     count: v.optional(v.number()),
   },
   handler: async (ctx, { competitorName, domain, step, topicCluster, count }) => {
+    await requireAdmin(ctx);
     if (step === "import") {
       await ctx.scheduler.runAfter(0, internal.admin.competitorIntel.importScrapedContent, {
         competitorName: competitorName || "",
@@ -633,6 +643,7 @@ export const kickoff = mutation({
 export const tagOne = action({
   args: {},
   handler: async (ctx) => {
+    await requireAdminAction(ctx);
     const config: { provider: string; model: string } = await ctx.runQuery(
       internal.agents.config.getConfig,
       { key: "competitor-tagger" }
@@ -667,6 +678,7 @@ export const tagOne = action({
 
     try {
       const tags = await tagCompetitorContent(
+        ctx, crypto.randomUUID(),
         config.provider as "google" | "openrouter" | "workers-ai",
         config.model,
         record.title || "",
@@ -708,10 +720,12 @@ export const enqueueForTagging = action({
     minPriority: v.optional(v.number()),
   },
   handler: async (ctx, { limit: limitArg, minPriority }) => {
+    await requireAdminAction(ctx);
     const PAGE_SIZE = 10;
     const maxRecords = limitArg ?? 100;
     let totalEnqueued = 0;
 
+    throw new Error("Remote tagger is disabled: owned gateway admission is not available");
     const workerUrl = process.env.TAGGER_WORKER_URL;
     const authSecret = process.env.TAGGER_AUTH_SECRET;
     if (!workerUrl || !authSecret) {
@@ -876,6 +890,7 @@ export const importAllForSync = mutation({
     ),
   },
   handler: async (ctx, { batch }) => {
+    await requireAdmin(ctx);
     let updated = 0;
     let created = 0;
     const now = Date.now();
@@ -911,6 +926,7 @@ export const importAllForSync = mutation({
 export const resetQueued = mutation({
   args: {},
   handler: async (ctx) => {
+    await requireAdmin(ctx);
     const queued = await ctx.db
       .query("competitorContent")
       .withIndex("by_status", (q) => q.eq("taggingStatus", "queued"))
@@ -937,6 +953,7 @@ export const retryFailed = mutation({
     batchSize: v.optional(v.number()),
   },
   handler: async (ctx, { competitorName, batchSize: batchSizeArg }) => {
+    await requireAdmin(ctx);
     const limit = batchSizeArg ?? 100;
 
     // Query per competitor to use the index (avoids full table scan)
@@ -1318,8 +1335,9 @@ export const tagNextBatch = internalAction({
     batchSize: v.optional(v.number()),
   },
   handler: async (ctx, { batchSize: batchSizeArg }) => {
-    const batchSize = batchSizeArg ?? 20;
+    const batchSize = batchSizeArg ?? 2;
 
+    if (!Number.isInteger(batchSize) || batchSize < 1 || batchSize > 10) throw new Error("Tagging batch must contain 1 to 10 records");
     // Get tagger config
     const config: { provider: string; model: string } = await ctx.runQuery(
       internal.agents.config.getConfig,
@@ -1342,15 +1360,8 @@ export const tagNextBatch = internalAction({
       return { tagged: 0, failed: 0, remaining: 0 };
     }
 
-    // Schedule next batch FIRST so processing failures don't break the chain.
+    // Each explicit operator invocation processes one bounded batch.
     const hasMore = untagged.length >= batchSize;
-    if (hasMore) {
-      await ctx.scheduler.runAfter(
-        1000,
-        internal.admin.competitorIntel.tagNextBatch,
-        { batchSize: batchSizeArg }
-      );
-    }
 
     let tagged = 0;
     let failed = 0;
@@ -1361,6 +1372,7 @@ export const tagNextBatch = internalAction({
     if (!siteUrl || !adminToken) throw new Error("SITE_URL and ADMIN_API_TOKEN must be set");
 
     // Process records in parallel for throughput
+    const inferenceRunId = crypto.randomUUID();
     const results = await Promise.allSettled(
       untagged.map(async (record) => {
         if (!record.r2Key) {
@@ -1391,6 +1403,7 @@ export const tagNextBatch = internalAction({
         const { content: markdown } = (await r2Res.json()) as { content: string };
 
         const tags = await tagCompetitorContent(
+        ctx, inferenceRunId,
           config.provider as "google" | "openrouter" | "workers-ai",
           config.model,
           record.title || "",
@@ -1463,6 +1476,7 @@ export const generateBriefs = internalAction({
   },
   handler: async (ctx, { topicCluster, count: countArg }) => {
     const count = countArg ?? 3;
+    if (!Number.isInteger(count) || count < 1 || count > 3) throw new Error("Brief count must be 1 to 3");
 
     // Get brief-generator config
     const config: { provider: string; model: string } = await ctx.runQuery(
@@ -1496,10 +1510,7 @@ export const generateBriefs = internalAction({
       )
       .join("\n\n");
 
-    const model = createModelFromConfig(
-      config.provider as "google" | "openrouter",
-      config.model
-    );
+    const model = await createModelFromConfig(ctx, "brief-generator", crypto.randomUUID(), config.provider, config.model);
 
     const briefSchema = z.object({
       briefs: z.array(
@@ -1562,24 +1573,14 @@ Respond with a JSON object containing a "briefs" array. Each brief must have: ti
     let object: { briefs: Array<Record<string, any>> };
     try {
       const result = await generateObject({
-        model,
+        model, maxRetries: 0, maxOutputTokens: 4096,
         schema: briefSchema,
         system: systemPrompt,
         prompt: userPrompt,
       });
       object = result.object;
-    } catch {
-      // Fallback: generateText + parse JSON
-      const { generateText } = await import("ai");
-      const { text } = await generateText({
-        model,
-        system: systemPrompt + "\n\nIMPORTANT: Respond with ONLY a valid JSON object. No markdown code fences.",
-        prompt: userPrompt,
-      });
-      const jsonMatch = text.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) throw new Error(`No JSON in brief response: ${text.slice(0, 300)}`);
-      object = JSON.parse(jsonMatch[0]);
-      if (!Array.isArray(object.briefs)) throw new Error("Response missing briefs array");
+    } catch (error) {
+      throw error;
     }
 
     // Save briefs to database
@@ -1649,7 +1650,6 @@ export const getUntagged = query({
 // Cloudflare AI Gateway (workers-ai/@cf/meta/llama-3.1-8b-instruct-fast).
 // ==========================================
 
-const TRIAGE_MODEL = "@cf/meta/llama-3.1-8b-instruct-fast";
 
 const TRIAGE_SYSTEM_PROMPT = `You are a content intelligence analyst for your content publication.
 
@@ -1791,11 +1791,14 @@ export const triageNextBatch = action({
     urlIncludesAny: v.optional(v.array(v.string())),
   },
   handler: async (ctx, { limit, includeTagged, onlyBlogs, urlIncludesAny }) => {
+    await requireAdminAction(ctx);
     const PAGE_SIZE = 20;
     const maxRecords = limit ?? 100;
+    if (!Number.isInteger(maxRecords) || maxRecords < 1 || maxRecords > 100) throw new Error("Triage batch must contain 1 to 100 records");
     const effectiveUrlFilter = urlIncludesAny ?? (onlyBlogs ? BLOG_URL_PATTERNS : undefined);
 
-    const model = createModelFromConfig("workers-ai", TRIAGE_MODEL);
+    const config = await ctx.runQuery(internal.agents.config.getConfig, { key: "competitor-triage" });
+    const model = await createModelFromConfig(ctx, "competitor-triage", crypto.randomUUID(), config.provider, config.model);
 
     let totalTriaged = 0;
     let totalSkipped = 0;
@@ -1837,12 +1840,12 @@ ${JSON.stringify(pagesForPrompt, null, 2)}`;
       let object: z.infer<typeof triageBatchSchema>;
       try {
         const { text } = await generateText({
-          model,
+          model, maxRetries: 0, maxOutputTokens: 4096,
           system:
             TRIAGE_SYSTEM_PROMPT +
             '\n\nIMPORTANT: Respond with ONLY a valid JSON object of shape { "results": [ { "recordId": string, "priority": number 1-5, "coarseCluster": string, "skipReason": string } ] }. Use EXACTLY those field names. No markdown code fences, no extra text.',
           prompt: userPrompt,
-          maxOutputTokens: 1400,
+
         });
         const jsonMatch = text.match(/\{[\s\S]*\}/);
         if (!jsonMatch) {
@@ -2059,6 +2062,7 @@ export const importTaggedMetadata = mutation({
     ),
   },
   handler: async (ctx, { batch }) => {
+    await requireAdmin(ctx);
     let updated = 0;
     let created = 0;
     const now = Date.now();

@@ -1,9 +1,9 @@
+import { AiConsumerSettings } from "./AiConsumerSettings";
 import { useMemo, useRef, useState, useEffect } from 'react';
 import {
   Loader2,
   RefreshCw,
   CheckCircle2,
-  Play,
   Settings2,
   ChevronDown,
 } from 'lucide-react';
@@ -17,7 +17,6 @@ import {
   type PipelineStep,
   PIPELINE_STEPS,
   PIPELINE_STEP_LABEL,
-  modelOptionsForStep,
 } from './modelCatalogUtils';
 
 type Step = PipelineStep;
@@ -29,7 +28,7 @@ const STEP_LETTER: Record<Step, string> = {
   draft: 'D',
 };
 
-type Catalog = Doc<'modelCatalog'>;
+type Catalog = Doc<'modelCatalog'> & { isDeprecated?: boolean; contextLength?: number };
 type Assumption = Doc<'pipelineCostAssumptions'>;
 
 function fmtUsd(n: number | null | undefined): string {
@@ -86,7 +85,7 @@ function AssignStepsDropdown({
       {open && (
         <div className="absolute z-20 right-0 mt-1 w-44 rounded-lg border border-slate-700 bg-slate-900 shadow-xl p-1">
           {STEPS.map((s) => {
-            const eligible = row.eligibleSteps.includes(s);
+            const eligible = row.recommendedFor.includes(s);
             const checked = row.recommendedFor.includes(s);
             return (
               <label
@@ -126,61 +125,7 @@ function AssignStepsDropdown({
 }
 
 function TryButton({ modelId }: { modelId: string }) {
-  const run = useAction(api.catalog.smokeTest.runSmokeTest);
-  const [busy, setBusy] = useState(false);
-  const [result, setResult] = useState<null | {
-    ok: boolean;
-    latencyMs: number;
-    costUsd: number;
-    text?: string;
-    error?: string;
-  }>(null);
-  return (
-    <div className="flex items-center gap-2">
-      <button
-        type="button"
-        disabled={busy}
-        onClick={async () => {
-          setBusy(true);
-          setResult(null);
-          try {
-            const r = await run({ modelId });
-            setResult(r);
-          } catch (e) {
-            setResult({
-              ok: false,
-              latencyMs: 0,
-              costUsd: 0,
-              error: e instanceof Error ? e.message : String(e),
-            });
-          } finally {
-            setBusy(false);
-          }
-        }}
-        className="inline-flex items-center gap-1 text-xs rounded-lg px-2 py-1 bg-slate-800 border border-slate-700 text-slate-200 hover:border-teal-600 disabled:opacity-50"
-      >
-        {busy ? (
-          <Loader2 className="w-3 h-3 animate-spin" />
-        ) : (
-          <Play className="w-3 h-3" />
-        )}
-        Try
-      </button>
-      {result && (
-        <span
-          className={cn(
-            'text-[11px]',
-            result.ok ? 'text-emerald-400' : 'text-red-400',
-          )}
-          title={result.error ?? result.text ?? ''}
-        >
-          {result.ok
-            ? `${result.latencyMs}ms · ${fmtUsd(result.costUsd)}`
-            : `fail: ${result.error?.slice(0, 40)}`}
-        </span>
-      )}
-    </div>
-  );
+  return <span title={modelId} className="text-xs text-slate-400">Experiments disabled</span>;
 }
 
 function DefaultPickerRow({
@@ -211,7 +156,7 @@ function DefaultPickerRow({
         <option value="">— choose a model —</option>
         {options.map((o) => (
           <option key={o.id} value={o.id}>
-            {o.name} ({fmtUsd(o.promptPrice)} in / {fmtUsd(o.completionPrice)} out per 1M)
+            {o.displayName} ({fmtUsd(o.promptPrice)} in / {fmtUsd(o.completionPrice)} out per 1M)
           </option>
         ))}
       </select>
@@ -302,8 +247,8 @@ function AssumptionsEditor({
 
 function ModelCatalogInner() {
   const currentUser = useQuery(api.users.getCurrentUser);
-  const catalog = useQuery(api.catalog.queries.list, {});
-  const assumptions = useQuery(api.catalog.queries.listAssumptions);
+  const catalog: Catalog[] | undefined = useQuery(api.catalog.queries.list, {});
+  const assumptions: Assumption[] | undefined = useQuery(api.catalog.queries.listAssumptions);
   const defaults = useQuery(api.catalog.queries.getDefaults);
   const setEnabled = useMutation(api.catalog.queries.setEnabled);
   const setRecommendedFor = useMutation(api.catalog.queries.setRecommendedFor);
@@ -348,10 +293,11 @@ function ModelCatalogInner() {
       stepFilter ? r.recommendedFor.includes(stepFilter) : true,
     );
 
-  const optionsForStep = (s: Step): Catalog[] => modelOptionsForStep(catalog, s);
+  const optionsForStep = (s: Step): Catalog[] => catalog.filter((row) => row.isEnabled && row.recommendedFor.includes(s));
 
   return (
     <div className="space-y-6">
+      <AiConsumerSettings />
       {/* Defaults per step */}
       <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-4 space-y-3">
         <div className="flex items-center justify-between">
@@ -482,7 +428,7 @@ function ModelCatalogInner() {
               {visible.map((row) => {
                 const chips = STEPS.map((s) => ({
                   step: s,
-                  est: row.eligibleSteps.includes(s)
+                  est: row.recommendedFor.includes(s)
                     ? estimate(row, assumptionByStep.get(s))
                     : null,
                 }));
@@ -496,7 +442,7 @@ function ModelCatalogInner() {
                   >
                     <td className="px-3 py-2">
                       <div className="font-medium text-slate-100">
-                        {row.name}
+                        {row.displayName}
                       </div>
                       <div className="text-[11px] text-slate-500 font-mono">
                         {row.id}
