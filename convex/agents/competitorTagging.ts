@@ -1,3 +1,4 @@
+import type { ActionCtx } from "../_generated/server";
 /**
  * Competitor Content Tagging
  *
@@ -72,6 +73,8 @@ Guidelines:
  * Tag a single competitor page using CF AI Gateway
  */
 export async function tagCompetitorContent(
+  ctx: ActionCtx,
+  runId: string,
   provider: "google" | "openrouter" | "workers-ai",
   modelId: string,
   pageTitle: string,
@@ -79,7 +82,7 @@ export async function tagCompetitorContent(
   sourceUrl: string,
   competitorName: string
 ): Promise<CompetitorTags> {
-  const model = createModelFromConfig(provider, modelId);
+  const model = await createModelFromConfig(ctx, "competitor-tagger", runId, provider, modelId);
 
   // Truncate to stay within token budget. Kept in sync with
   // workers/tagger/src/index.ts — 5k chars is enough for this classification task.
@@ -101,53 +104,13 @@ ${truncatedContent}`;
   try {
     // Try generateObject first (structured output)
     const { object } = await generateObject({
-      model,
+      model, maxRetries: 0, maxOutputTokens: 4096,
       schema: competitorTagSchema,
       system: TAGGING_SYSTEM_PROMPT,
       prompt: userPrompt,
     });
     return object;
   } catch (structuredErr) {
-    // Fallback: use generateText and parse JSON manually
-    console.warn(
-      `[tagCompetitorContent] generateObject failed for ${sourceUrl}, falling back to text: ${structuredErr}`
-    );
-
-    const { generateText } = await import("ai");
-    const { text } = await generateText({
-      model,
-      system: TAGGING_SYSTEM_PROMPT + "\n\nIMPORTANT: Respond with ONLY a valid JSON object. No markdown code fences, no extra text.",
-      prompt: userPrompt + `\n\nRespond with a JSON object containing these fields:
-- topicTag (string, 2-4 lowercase words)
-- searchKeywords (array of 3-8 strings)
-- contentAngle (string)
-- topicCluster (string, snake_case)
-- destinations (array of strings, lowercase)
-- contentTopics (array of strings, lowercase)
-- qualityScore (number 1-10)
-- summary (string, 2-3 sentences)
-- contentType (string)`,
-    });
-
-    // Extract JSON from response
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
-      throw new Error(`No JSON found in fallback response: ${text.slice(0, 200)}`);
-    }
-
-    const raw = JSON.parse(jsonMatch[0]);
-
-    // Coerce types to match schema
-    return {
-      topicTag: String(raw.topicTag || "unknown"),
-      searchKeywords: Array.isArray(raw.searchKeywords) ? raw.searchKeywords.map(String) : [],
-      contentAngle: String(raw.contentAngle || "other"),
-      topicCluster: String(raw.topicCluster || "other"),
-      destinations: Array.isArray(raw.destinations) ? raw.destinations.map(String) : [],
-      contentTopics: Array.isArray(raw.contentTopics) ? raw.contentTopics.map(String) : [],
-      qualityScore: Number(raw.qualityScore) || 5,
-      summary: String(raw.summary || ""),
-      contentType: String(raw.contentType || "other"),
-    };
+    throw structuredErr;
   }
 }

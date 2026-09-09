@@ -1,28 +1,34 @@
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
-import { buildGatewayBaseUrl, buildGatewayHeaders, GATEWAY_HOST } from "../lib/aiGateway";
+import { buildGatewayBaseUrl, buildGatewayHeaders } from "../lib/aiGateway";
 
 export type GatewayProvider = "openrouter" | "workers-ai";
 
-function getGatewayConfig() {
-  const accountId = process.env.CF_ACCOUNT_ID ?? process.env.CLOUDFLARE_ACCOUNT_ID ?? "";
-  const gatewayName = process.env.CF_AI_GATEWAY_NAME ?? process.env.CLOUDFLARE_AI_GATEWAY_NAME ?? "social-pipeline";
-  const token = process.env.CLOUDFLARE_AI_GATEWAY_TOKEN ?? process.env.CF_AI_GATEWAY_TOKEN ?? "";
-  return { accountId, gatewayName, token };
-}
+import { internalQuery } from "../_generated/server";
+import type { ActionCtx } from "../_generated/server";
+import { internal } from "../_generated/api";
+import { v } from "convex/values";
+import { validatePolicy } from "../lib/aiPolicy";
+import { controlledTransport } from "../lib/controlledTransport";
+import { readGatewayConfigFromEnv } from "../lib/aiGateway";
 
-export function createModelFromConfig(provider: GatewayProvider, modelId: string) {
-  const cfg = getGatewayConfig();
-  const baseURL =
-    provider === "workers-ai"
-      ? `https://${GATEWAY_HOST}/v1/${cfg.accountId}/${cfg.gatewayName}/workers-ai`
-      : buildGatewayBaseUrl(cfg as any);
+export const getConfig = internalQuery({ args: { key: v.string() }, handler: async (ctx, { key }) => {
+  const row = await ctx.db.query("agentConfigs").withIndex("by_workspace_key", (q) => q.eq("workspaceId", undefined).eq("key", key)).unique();
+  return validatePolicy(row, key);
+} });
 
-  const openrouter = createOpenAICompatible({
-    name: provider,
-    baseURL,
-    headers: buildGatewayHeaders(cfg as any),
+export async function createModelFromConfig(ctx: ActionCtx, key: string, runId: string, provider: string, modelId: string) {
+  const policy = await ctx.runQuery(internal.agents.authority.get, { key });
+  if (provider !== policy.provider || modelId !== policy.model) throw new Error("Model override differs from authoritative settings");
+  const cfg = readGatewayConfigFromEnv();
+  const adapter = createOpenAICompatible({
+    name: "openrouter", baseURL: buildGatewayBaseUrl(cfg),
+    headers: buildGatewayHeaders(cfg),
+    fetch: controlledTransport(cfg, policy, {
+      acquire: () => ctx.runMutation(internal.agents.authority.acquire, { key, runId, model: modelId }),
+      release: (id) => ctx.runMutation(internal.agents.authority.release, { key, id }),
+    }),
   });
-  return openrouter(modelId);
+  return adapter(`openrouter/${modelId}`);
 }
 
 // Default per-stage agent configs seeded by the init migration
@@ -30,78 +36,29 @@ export const defaultConfigs = [
   {
     key: "research",
     provider: "openrouter" as GatewayProvider,
-    model: "perplexity/sonar-pro",
+    model: "perplexity/sonar",
     description: "Research agent — web-grounded deep research",
     createdAt: Date.now(),
   },
   {
     key: "outline",
     provider: "openrouter" as GatewayProvider,
-    model: "google/gemini-2.5-flash-preview",
+    model: "google/gemini-2.5-flash",
     description: "Outline agent — structure and planning",
     createdAt: Date.now(),
   },
   {
     key: "draft",
     provider: "openrouter" as GatewayProvider,
-    model: "anthropic/claude-sonnet-4-5",
+    model: "google/gemini-2.5-flash",
     description: "Draft agent — full content generation",
     createdAt: Date.now(),
   },
 ];
 
-// Seed catalog for the availableModels table
-export const availableModelsSeed = [
-  {
-    provider: "openrouter",
-    modelId: "perplexity/sonar-pro",
-    displayName: "Perplexity Sonar Pro",
-    description: "Best for research — real-time web search",
-    gatewayEndpoint: "openrouter",
-    category: "chat" as const,
-    isRecommended: true,
-    order: 1,
-    inputCostPerMillionTokens: 3,
-    outputCostPerMillionTokens: 15,
-    createdAt: Date.now(),
-  },
-  {
-    provider: "openrouter",
-    modelId: "anthropic/claude-sonnet-4-5",
-    displayName: "Claude Sonnet 4.5",
-    description: "High quality drafts with strong instruction following",
-    gatewayEndpoint: "openrouter",
-    category: "chat" as const,
-    isRecommended: true,
-    order: 2,
-    inputCostPerMillionTokens: 3,
-    outputCostPerMillionTokens: 15,
-    createdAt: Date.now(),
-  },
-  {
-    provider: "openrouter",
-    modelId: "google/gemini-2.5-flash-preview",
-    displayName: "Gemini 2.5 Flash",
-    description: "Fast and cheap — good for outlines and structured tasks",
-    gatewayEndpoint: "openrouter",
-    category: "chat" as const,
-    isRecommended: true,
-    order: 3,
-    inputCostPerMillionTokens: 0.15,
-    outputCostPerMillionTokens: 0.6,
-    createdAt: Date.now(),
-  },
-  {
-    provider: "openrouter",
-    modelId: "openai/gpt-4o",
-    displayName: "GPT-4o",
-    description: "OpenAI flagship model",
-    gatewayEndpoint: "openrouter",
-    category: "chat" as const,
-    isRecommended: false,
-    order: 4,
-    inputCostPerMillionTokens: 2.5,
-    outputCostPerMillionTokens: 10,
-    createdAt: Date.now(),
-  },
-];
+// Catalog discovery is separate from admission; only these reviewed defaults are listed.
+export const availableModelsSeed = defaultConfigs.map((config, order) => ({
+  provider: config.provider, modelId: config.model, displayName: config.model,
+  description: config.description, gatewayEndpoint: "openrouter", category: "chat" as const,
+  isRecommended: false, order, createdAt: Date.now(),
+}));

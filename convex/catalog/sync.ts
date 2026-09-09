@@ -2,6 +2,12 @@ import { internalAction, internalMutation } from "../_generated/server";
 import { internal } from "../_generated/api";
 import { v } from "convex/values";
 import type { PipelineStep } from "./eligibility";
+import { adminAction } from "../lib/adminAuth";
+import type { ActionCtx } from "../_generated/server";
+
+export const runSyncNow = adminAction({ args: {}, handler: async (ctx: ActionCtx) =>
+  ctx.runAction(internal.catalog.sync.syncModelCatalog, {})
+});
 
 interface OpenRouterModel {
   id: string;

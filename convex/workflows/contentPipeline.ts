@@ -107,7 +107,8 @@ export const contentPipelineWorkflow = workflowManager.define({
             keywords,
             targetAudience,
             feedback,
-          }
+          },
+          { retry: false }
         );
       } catch (error) {
         return await rejectWithError(step, workflowRecordId, "research", error);
@@ -215,7 +216,8 @@ export const contentPipelineWorkflow = workflowManager.define({
             workflowRecordId,
             selectedAngle: selectedAngle!,
             feedback,
-          }
+          },
+          { retry: false }
         );
       } catch (error) {
         return await rejectWithError(step, workflowRecordId, "outline", error);
@@ -319,7 +321,8 @@ export const contentPipelineWorkflow = workflowManager.define({
           {
             workflowRecordId,
             feedback,
-          }
+          },
+          { retry: false }
         );
       } catch (error) {
         return await rejectWithError(step, workflowRecordId, "draft", error);

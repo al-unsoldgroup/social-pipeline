@@ -31,6 +31,12 @@ export const adminTables = {
   // ===== AGENT CONFIG =====
 
   agentConfigs: defineTable({
+    owner: v.optional(v.string()),
+    maxInputChars: v.optional(v.number()),
+    maxOutputTokens: v.optional(v.number()),
+    maxCalls: v.optional(v.number()),
+    maxConcurrency: v.optional(v.number()),
+    maxCallsPerMinute: v.optional(v.number()),
     key: v.string(),
     provider: v.string(),
     model: v.string(),
@@ -42,6 +48,12 @@ export const adminTables = {
     updatedAt: v.number(),
   }).index("by_key", ["key"])
     .index("by_workspace_key", ["workspaceId", "key"]),
+
+  aiAdmission: defineTable({
+    key: v.string(), minute: v.number(), count: v.number(),
+    leases: v.array(v.object({ id: v.string(), expiresAt: v.number() })),
+  }).index("by_key", ["key"]),
+  aiRunCounts: defineTable({ runId: v.string(), key: v.string(), count: v.number() }).index("by_run", ["runId", "key"]),
 
   availableModels: defineTable({
     provider: v.string(),

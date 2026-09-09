@@ -18,7 +18,7 @@ export async function handler(ctx: MutationCtx): Promise<string> {
     if (!existing) {
       await ctx.db.insert("agentConfigs", {
         ...config,
-        isActive: true,
+        isActive: false,
         updatedAt: now,
       });
       configsInserted++;
