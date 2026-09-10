@@ -1,5 +1,7 @@
 import { v } from "convex/values";
-import { query, mutation } from "./_generated/server";
+import { query, mutation, internalMutation } from "./_generated/server";
+import type { MutationCtx } from "./_generated/server";
+import { requireAdmin } from "./lib/adminAuth";
 
 /**
  * Get all translations for a specific content item + locale.
@@ -129,7 +131,7 @@ export const getStatusByType = query({
 });
 
 /**
- * Upsert a single translation (admin use).
+ * Upsert a single translation. Admin only — these rows render on public blog pages.
  */
 export const upsert = mutation({
   args: {
@@ -142,6 +144,7 @@ export const upsert = mutation({
     translatedBy: v.optional(v.string()),
   },
   handler: async (ctx, { contentType, contentId, locale, field, value, status, translatedBy }) => {
+    await requireAdmin(ctx);
     const existing = await ctx.db
       .query("contentTranslations")
       .withIndex("by_content", (q) =>
@@ -176,55 +179,87 @@ export const upsert = mutation({
   },
 });
 
+const bulkUpsertArgs = {
+  contentType: v.string(),
+  contentId: v.string(),
+  locale: v.string(),
+  translations: v.array(v.object({
+    field: v.string(),
+    value: v.string(),
+  })),
+  status: v.optional(v.string()),
+  translatedBy: v.optional(v.string()),
+};
+
+type BulkUpsertArgs = {
+  contentType: string;
+  contentId: string;
+  locale: string;
+  translations: Array<{ field: string; value: string }>;
+  status?: string;
+  translatedBy?: string;
+};
+
+async function bulkUpsertTranslations(
+  ctx: MutationCtx,
+  { contentType, contentId, locale, translations, status, translatedBy }: BulkUpsertArgs,
+) {
+  const existing = await ctx.db
+    .query("contentTranslations")
+    .withIndex("by_content", (q) =>
+      q.eq("contentType", contentType).eq("contentId", contentId).eq("locale", locale)
+    )
+    .collect();
+
+  const existingByField = new Map(existing.map((t) => [t.field, t]));
+  const now = Date.now();
+
+  for (const { field, value } of translations) {
+    const ex = existingByField.get(field);
+    if (ex) {
+      await ctx.db.patch(ex._id, {
+        value,
+        status: (status as "draft" | "published" | "needs_review") ?? ex.status,
+        translatedBy: translatedBy ?? ex.translatedBy,
+        updatedAt: now,
+      });
+    } else {
+      await ctx.db.insert("contentTranslations", {
+        contentType,
+        contentId,
+        locale,
+        field,
+        value,
+        status: (status as "draft" | "published" | "needs_review") ?? "published",
+        translatedBy: translatedBy ?? "auto",
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+  }
+}
+
 /**
- * Bulk upsert translations for a content item (admin use).
+ * Bulk upsert translations for a content item. Admin only — these rows render
+ * on public blog pages, so an anonymous caller must not be able to write them.
  */
 export const bulkUpsert = mutation({
-  args: {
-    contentType: v.string(),
-    contentId: v.string(),
-    locale: v.string(),
-    translations: v.array(v.object({
-      field: v.string(),
-      value: v.string(),
-    })),
-    status: v.optional(v.string()),
-    translatedBy: v.optional(v.string()),
+  args: bulkUpsertArgs,
+  handler: async (ctx, args) => {
+    await requireAdmin(ctx);
+    await bulkUpsertTranslations(ctx, args);
   },
-  handler: async (ctx, { contentType, contentId, locale, translations, status, translatedBy }) => {
-    const existing = await ctx.db
-      .query("contentTranslations")
-      .withIndex("by_content", (q) =>
-        q.eq("contentType", contentType).eq("contentId", contentId).eq("locale", locale)
-      )
-      .collect();
+});
 
-    const existingByField = new Map(existing.map((t) => [t.field, t]));
-    const now = Date.now();
-
-    for (const { field, value } of translations) {
-      const ex = existingByField.get(field);
-      if (ex) {
-        await ctx.db.patch(ex._id, {
-          value,
-          status: (status as "draft" | "published" | "needs_review") ?? ex.status,
-          translatedBy: translatedBy ?? ex.translatedBy,
-          updatedAt: now,
-        });
-      } else {
-        await ctx.db.insert("contentTranslations", {
-          contentType,
-          contentId,
-          locale,
-          field,
-          value,
-          status: (status as "draft" | "published" | "needs_review") ?? "published",
-          translatedBy: translatedBy ?? "auto",
-          createdAt: now,
-          updatedAt: now,
-        });
-      }
-    }
+/**
+ * Internal bulk upsert for trusted server callers (the translation agent).
+ * Not exposed to the public API — auth is enforced upstream at the admin
+ * action that schedules the agent.
+ */
+export const bulkUpsertInternal = internalMutation({
+  args: bulkUpsertArgs,
+  handler: async (ctx, args) => {
+    await bulkUpsertTranslations(ctx, args);
   },
 });
 
