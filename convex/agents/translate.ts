@@ -127,8 +127,8 @@ export const translatePost = internalAction({
           prompt,
         });
 
-        // Store via existing bulkUpsert
-        await ctx.runMutation(api.contentTranslations.bulkUpsert, {
+        // Store via the internal (server-only) bulk upsert
+        await ctx.runMutation(internal.contentTranslations.bulkUpsertInternal, {
           contentType: "blogPosts",
           contentId: postId,
           locale,
@@ -348,7 +348,7 @@ export const translateEntity = internalAction({
           throw new Error("No valid translations in response");
         }
 
-        await ctx.runMutation(api.contentTranslations.bulkUpsert, {
+        await ctx.runMutation(internal.contentTranslations.bulkUpsertInternal, {
           contentType,
           contentId,
           locale,
