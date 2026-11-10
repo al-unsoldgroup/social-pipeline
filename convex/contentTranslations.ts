@@ -1,3 +1,4 @@
+import { paginationOptsValidator } from "convex/server";
 import { v } from "convex/values";
 import { query, mutation } from "./_generated/server";
 
@@ -229,19 +230,22 @@ export const bulkUpsert = mutation({
 });
 
 /**
- * List all translations for a content type + locale (admin UI).
+ * List translations for a content type + locale (admin UI), one page at a time.
+ * Use with `usePaginatedQuery`. A type + locale can hold more rows than Convex
+ * allows in one query result, so never collect the full range.
  */
 export const listByTypeAndLocale = query({
   args: {
     contentType: v.string(),
     locale: v.string(),
+    paginationOpts: paginationOptsValidator,
   },
-  handler: async (ctx, { contentType, locale }) => {
+  handler: async (ctx, { contentType, locale, paginationOpts }) => {
     return await ctx.db
       .query("contentTranslations")
       .withIndex("by_type_locale", (q) =>
         q.eq("contentType", contentType).eq("locale", locale)
       )
-      .collect();
+      .paginate(paginationOpts);
   },
 });
